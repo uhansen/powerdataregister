@@ -1,10 +1,9 @@
-use spin_sdk::http_component;
-use spin_sdk::http::{IntoResponse, Request, Router};
-use spin_sdk::sqlite::{Connection, Value};
-use spin_sdk::http::{Json, Params};
-
+use anyhow::{Context, Result};
 use build_html::{Container, ContainerType, Html, HtmlContainer};
-use serde::{Deserialize};
+use serde::{Deserialize, Serialize};
+use spin_sdk::http::{IntoResponse, Params, Request, Response, Router};
+use spin_sdk::http_component;
+use spin_sdk::sqlite::{Connection, Value};
 
 /// A simple Spin HTTP component.
 #[http_component]
@@ -16,9 +15,24 @@ fn handle_powerstatusapi(req: Request) -> anyhow::Result<impl IntoResponse> {
   Ok(r.handle(req))
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Customer {
+  pub id: i64,
+  pub firstName: String,
+  pub lastName: String,
+  pub street : String,
+  pub city : String,
+  pub zip : String,
+  pub country : String,
+  pub accessKey : String,    
+}
 
-fn add_new(req: http::Request<Json<Customer>>, _params: Params) -> anyhow::Result<impl IntoResponse> {
-    let item = req.into_body().0;
+fn add_new(req: Request, _params: Params) -> anyhow::Result<impl IntoResponse> {
+  let Ok(item): Result<Customer> =
+      serde_json::from_reader(req.body()).with_context(|| "Error while deserializing payload")
+    else {
+      return Ok(Response::new(400, "Invalid payload received"));
+    };
     let connection = Connection::open_default()?;
     let parameters = &[Value::Text(item.firstName), 
                     Value::Text(item.lastName), 
@@ -29,9 +43,10 @@ fn add_new(req: http::Request<Json<Customer>>, _params: Params) -> anyhow::Resul
                     Value::Text(item.accessKey)];
     connection.execute("INSERT INTO CUSTOMERS (FirstName,LastName, Street, City, Zip, Country, AccessKey) VALUES (?,?,?,?,?,?,?)", parameters)?;
     Ok(Response::builder()
-      .status(200)
-      .header("HX-Trigger", "newItem")
-      .body(())?)
+        .status(200)
+        .header("HX-Trigger", "newItem")
+        .body(())
+        .build())
   }
 
   
@@ -62,20 +77,22 @@ fn get_all(_r: Request, _p: Params) -> anyhow::Result<impl IntoResponse> {
     let Ok(id) = id.parse::<i64>() else {
       return Ok(Response::builder()
         .status(400)
-        .body("Unexpected identifier format")?);
+        .body("Unexpected identifier format"));
     };
     let connection = Connection::open_default()?;
     let parameters = &[Value::Integer(id)];
-  
+    
     match connection.execute("DELETE FROM CUSTOMERS WHERE ID = ?", parameters) {
-      Ok(_) => Ok(Response::default()),
-      Err(e) => {
-        println!("Error while deleting item: {}", e);
-        Ok(Response::builder()
-          .status(500)
-          .body("Error while deleting item")?)
-      }
-    }}
+        // HTMX requires status 200 instead of 204
+        Ok(_) => Response::new(200, ()),
+        Err(e) => {
+            println!("Error while deleting item: {}", e);
+            Response::builder()
+                .status(500)
+                .body("Error while deleting item")
+                .build()
+        }
+    };}
 
 impl Html for Customer {
   fn to_html_string(&self) -> String {
@@ -88,18 +105,6 @@ impl Html for Customer {
         Container::new(ContainerType::Div)
           .with_attributes(vec![("class", "FirstName")])
           .with_raw(&self.firstName),
-          .with_attributes(vec![("class", "LastName")])
-          .with_raw(&self.lastName),
-          .with_attributes(vec![("class", "Street")])
-          .with_raw(&self.street),
-          .with_attributes(vec![("class", "City")])
-          .with_raw(&self.city),
-          .with_attributes(vec![("class", "Zip")])
-          .with_raw(&self.zip),
-          .with_attributes(vec![("class", "Country")])
-          .with_raw(&self.country),
-          .with_attributes(vec![("class", "AccessKey")])
-          .with_raw(&self.accessKey),
       )
       .with_container(
         Container::new(ContainerType::Div)
@@ -111,16 +116,3 @@ impl Html for Customer {
       )
       .to_html_string()
   }}
-
-  
-  #[derive(Deserialize)]
-  pub struct Customer {
-    pub id: i64,
-    pub firstName: String,
-    pub lastName: String,
-    pub street : String,
-    pub city : String,
-    pub zip : String,
-    pub country : String,
-    pub accessKey : String,    
-  }
